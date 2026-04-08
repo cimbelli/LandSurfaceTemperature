@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+.venv
+.streamlit/
+.DS_Store
+Thumbs.db
+*.shp.xml
+*.cpg
+*.qix
+data/
