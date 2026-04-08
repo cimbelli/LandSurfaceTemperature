@@ -1,11 +1,8 @@
 streamlit
-geopandas
 pandas
 folium
 streamlit-folium
 mapclassify
 openpyxl
 branca
-fiona
-pyproj
-shapely
+topojson
