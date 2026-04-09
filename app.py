@@ -8,18 +8,14 @@ import pandas as pd
 import streamlit as st
 from streamlit_folium import st_folium
 
-
-st.set_page_config(page_title="Land Surface Temperature", layout="wide")
-
+st.set_page_config(page_title="Temperatura superficiale", layout="wide")
 
 DATA_DIR = Path("data")
 TOPO_DIR = DATA_DIR / "topojson"
 EXCEL_DIR = DATA_DIR / "excel"
+COMUNI_FILE = DATA_DIR / "comuni.csv"
 
 
-# -----------------------------
-# Utility
-# -----------------------------
 def normalize_code(series: pd.Series, width: int | None = None) -> pd.Series:
     s = series.astype(str).str.strip().str.replace(".0", "", regex=False)
     s = s.str.replace(r"\s+", "", regex=True)
@@ -37,12 +33,20 @@ def get_available_excels():
 
 
 def infer_code_from_name(path: Path):
-    # cerca un codice comune a 6 cifre nel nome file
     parts = path.stem.replace("-", "_").split("_")
     for p in parts:
         if p.isdigit() and len(p) == 6:
             return p
     return None
+
+
+def load_comuni_dict():
+    if COMUNI_FILE.exists():
+        comuni_df = pd.read_csv(COMUNI_FILE, dtype=str)
+        comuni_df["PRO_COM"] = normalize_code(comuni_df["PRO_COM"], width=6)
+        comuni_df["COMUNE"] = comuni_df["COMUNE"].astype(str).str.strip()
+        return comuni_df
+    return pd.DataFrame(columns=["PRO_COM", "COMUNE"])
 
 
 def index_datasets():
@@ -61,38 +65,13 @@ def index_datasets():
         if code:
             excel_map[code] = f
 
-    comuni = sorted(set(topo_map.keys()) & set(excel_map.keys()))
-    return comuni, topo_map, excel_map
+    comuni_codes = sorted(set(topo_map.keys()) & set(excel_map.keys()))
+    return comuni_codes, topo_map, excel_map
 
 
-def load_topojson_as_geojson(path: Path):
-    with open(path, "r", encoding="utf-8") as f:
-        topo = json.load(f)
-
-    # usa topojson package se disponibile
-    try:
-        from topojson import Topology
-        geo = Topology(topo).to_geojson()
-        geojson = json.loads(geo)
-    except Exception:
-        # fallback: richiede che il package topojson sia installato
-        raise RuntimeError(
-            "Impossibile leggere il TopoJSON. "
-            "Aggiungi 'topojson' al requirements.txt."
-        )
-
-    return topo, geojson
-
-
-def topo_properties_to_dataframe(geojson: dict) -> pd.DataFrame:
-    rows = []
-    for feat in geojson["features"]:
-        props = feat.get("properties", {}).copy()
-        rows.append(props)
-    return pd.DataFrame(rows)
-
-
-def load_excel_tables(path: Path):
+@st.cache_data
+def load_excel_tables(path_str: str):
+    path = Path(path_str)
     xls = pd.ExcelFile(path)
     sheets = xls.sheet_names
 
@@ -103,6 +82,26 @@ def load_excel_tables(path: Path):
     uhi_df = pd.read_excel(path, sheet_name=uhi_sheet)
 
     return temp_df, uhi_df, sheets
+
+
+@st.cache_data
+def load_topojson_as_geojson(path_str: str):
+    path = Path(path_str)
+    with open(path, "r", encoding="utf-8") as f:
+        topo = json.load(f)
+
+    from topojson import Topology
+    geo = Topology(topo).to_geojson()
+    geojson = json.loads(geo)
+
+    return geojson
+
+
+def topo_properties_to_dataframe(geojson: dict) -> pd.DataFrame:
+    rows = []
+    for feat in geojson["features"]:
+        rows.append(feat.get("properties", {}).copy())
+    return pd.DataFrame(rows)
 
 
 def get_year_columns(df: pd.DataFrame, prefix: str):
@@ -117,23 +116,18 @@ def classify_values(values: pd.Series, method: str, k: int = 5):
     unique_count = len(values.unique())
     k = min(k, max(1, unique_count))
 
-    if method == "Quantiles":
+    if method == "Quantili":
         return mapclassify.Quantiles(values, k=k)
-    elif method == "Equal intervals":
+    elif method == "Intervalli uguali":
         return mapclassify.EqualInterval(values, k=k)
     elif method == "Natural Breaks (Jenks)":
         return mapclassify.NaturalBreaks(values, k=k)
-    elif method == "Standard deviation":
+    elif method == "Deviazione standard":
         return mapclassify.StdMean(values)
-    else:
-        return mapclassify.Quantiles(values, k=k)
+    return mapclassify.Quantiles(values, k=k)
 
 
 def add_class_column(df: pd.DataFrame, value_col: str, classifier):
-    if classifier is None:
-        df["_class_id"] = None
-        return df
-
     def assign_bin(val):
         if pd.isna(val):
             return None
@@ -148,20 +142,14 @@ def add_class_column(df: pd.DataFrame, value_col: str, classifier):
 
 def get_palette_colors(name: str, n: int):
     palettes = {
-        "YlOrRd": ["#ffffcc", "#ffeda0", "#feb24c", "#f03b20", "#bd0026"],
-        "OrRd": ["#fef0d9", "#fdcc8a", "#fc8d59", "#e34a33", "#b30000"],
-        "YlGnBu": ["#ffffd9", "#c7e9b4", "#7fcdbb", "#41b6c4", "#225ea8"],
-        "Blues": ["#eff3ff", "#bdd7e7", "#6baed6", "#3182bd", "#08519c"],
+        "Giallo-Rosso": ["#ffffcc", "#ffeda0", "#feb24c", "#f03b20", "#bd0026"],
+        "Arancio-Rosso": ["#fef0d9", "#fdcc8a", "#fc8d59", "#e34a33", "#b30000"],
+        "Giallo-Verde-Blu": ["#ffffd9", "#c7e9b4", "#7fcdbb", "#41b6c4", "#225ea8"],
+        "Blu": ["#eff3ff", "#bdd7e7", "#6baed6", "#3182bd", "#08519c"],
         "Viridis": ["#440154", "#3b528b", "#21918c", "#5ec962", "#fde725"],
     }
-    base = palettes.get(name, palettes["YlOrRd"])
-    if n <= len(base):
-        return base[:n]
-    return base + [base[-1]] * (n - len(base))
-
-
-def build_color_map(class_ids, colors):
-    return {i: colors[i] for i in range(len(colors))}
+    base = palettes.get(name, palettes["Giallo-Rosso"])
+    return base[:n] if n <= len(base) else base + [base[-1]] * (n - len(base))
 
 
 def style_function_factory(color_map: dict):
@@ -175,25 +163,6 @@ def style_function_factory(color_map: dict):
             "fillOpacity": 0.75,
         }
     return style_function
-
-
-def compute_center_from_geojson(geojson):
-    # centro grezzo dalla bbox dei vertici
-    xs = []
-    ys = []
-
-    def walk(coords):
-        if isinstance(coords[0], (int, float)):
-            xs.append(coords[0])
-            ys.append(coords[1])
-        else:
-            for c in coords:
-                walk(c)
-
-    for feat in geojson["features"]:
-        walk(feat["geometry"]["coordinates"])
-
-    return [sum(ys) / len(ys), sum(xs) / len(xs)]
 
 
 def merge_properties_into_geojson(geojson, merged_df, join_key="SEZ21_ID"):
@@ -213,55 +182,76 @@ def merge_properties_into_geojson(geojson, merged_df, join_key="SEZ21_ID"):
     return geojson
 
 
-def build_label(code: str):
-    return f"{code}"
+CENTERS = {
+    "079023": [45.65, 13.77],
+    "070006": [41.56, 14.66],
+}
 
 
-# -----------------------------
-# App
-# -----------------------------
-st.title("Interactive map of Landsat summer LST and UHI")
+st.title("Mappa interattiva della temperatura superficiale estiva e UHI")
 
-comuni, topo_map, excel_map = index_datasets()
+comuni_codes, topo_map, excel_map = index_datasets()
+comuni_dict = load_comuni_dict()
 
-if not comuni:
-    st.error(
-        "Nessun dataset trovato. "
-        "Metti i TopoJSON in data/topojson/ e gli Excel in data/excel/ "
-        "usando nel nome il codice comune a 6 cifre."
-    )
+if not comuni_codes:
+    st.error("Nessun dataset trovato nelle cartelle data/topojson e data/excel.")
     st.stop()
 
-with st.sidebar:
-    st.header("Controls")
+# costruzione etichette comuni
+if not comuni_dict.empty:
+    comuni_disponibili = comuni_dict[comuni_dict["PRO_COM"].isin(comuni_codes)].copy()
+else:
+    comuni_disponibili = pd.DataFrame({
+        "PRO_COM": comuni_codes,
+        "COMUNE": comuni_codes
+    })
 
-    comune_code = st.selectbox(
-        "Municipality",
-        comuni,
-        format_func=build_label
-    )
+if comuni_disponibili.empty:
+    st.error("Nessuna corrispondenza trovata tra i dataset disponibili e il file comuni.csv.")
+    st.stop()
 
-    theme = st.selectbox("Indicator", ["Temp_media", "UHI"])
+comuni_disponibili = comuni_disponibili.sort_values("COMUNE")
+
+nome_to_code = {
+    row["COMUNE"]: row["PRO_COM"]
+    for _, row in comuni_disponibili.iterrows()
+}
+
+with st.sidebar.form("controls_form"):
+    nome_comune = st.selectbox("Comune", list(nome_to_code.keys()))
+    theme = st.selectbox("Indicatore", ["Temp_media", "UHI"])
     class_method = st.selectbox(
-        "Classification",
-        ["Quantiles", "Equal intervals", "Natural Breaks (Jenks)", "Standard deviation"]
+        "Classificazione",
+        ["Quantili", "Intervalli uguali", "Natural Breaks (Jenks)", "Deviazione standard"]
     )
-    k_classes = st.slider("Number of classes", 3, 7, 5)
-    palette = st.selectbox("Palette", ["YlOrRd", "OrRd", "YlGnBu", "Blues", "Viridis"])
-    basemap = st.selectbox("Basemap", ["OpenStreetMap", "CartoDB positron", "CartoDB dark_matter"])
-    show_only_valid = st.checkbox("Show only valid sections", value=True)
+    k_classes = st.slider("Numero classi", 3, 7, 5)
+    palette = st.selectbox(
+        "Palette",
+        ["Giallo-Rosso", "Arancio-Rosso", "Giallo-Verde-Blu", "Blu", "Viridis"]
+    )
+    basemap = st.selectbox(
+        "Mappa di base",
+        ["OpenStreetMap", "CartoDB positron", "CartoDB dark_matter"]
+    )
+    show_only_valid = st.checkbox("Mostra solo sezioni con valori validi", value=True)
+    load_map = st.form_submit_button("Carica mappa")
 
+if not load_map:
+    st.info("Seleziona un comune e clicca su 'Carica mappa'.")
+    st.stop()
+
+comune_code = nome_to_code[nome_comune]
 topo_path = topo_map[comune_code]
 excel_path = excel_map[comune_code]
 
 try:
-    topo_raw, geojson = load_topojson_as_geojson(topo_path)
+    geojson = load_topojson_as_geojson(str(topo_path))
 except Exception as e:
     st.error(f"Errore nella lettura del TopoJSON: {e}")
     st.stop()
 
 try:
-    temp_df, uhi_df, sheets = load_excel_tables(excel_path)
+    temp_df, uhi_df, sheets = load_excel_tables(str(excel_path))
 except Exception as e:
     st.error(f"Errore nella lettura dell'Excel: {e}")
     st.stop()
@@ -271,16 +261,16 @@ prefix = "Media_" if theme == "Temp_media" else "UHI_"
 
 year_cols = get_year_columns(df, prefix)
 if not year_cols:
-    st.error(
-        f"Nessuna colonna trovata con prefisso '{prefix}' nel file {excel_path.name}."
-    )
+    st.error(f"Nessuna colonna trovata con prefisso {prefix}.")
     st.stop()
 
-years = [c.replace(prefix, "") for c in year_cols]
-year = st.sidebar.selectbox("Year", years, index=len(years) - 1)
-value_col = f"{prefix}{year}"
+anno = st.selectbox(
+    "Anno",
+    [c.replace(prefix, "") for c in year_cols],
+    index=len(year_cols) - 1
+)
+value_col = f"{prefix}{anno}"
 
-# proprietà del topojson
 props_df = topo_properties_to_dataframe(geojson)
 
 if "SEZ21_ID" not in props_df.columns:
@@ -291,7 +281,6 @@ if "SEZ21_ID" not in df.columns:
     st.error("Nell'Excel manca la colonna SEZ21_ID.")
     st.stop()
 
-# normalizzazione join
 props_df["SEZ21_ID"] = normalize_code(props_df["SEZ21_ID"], width=12)
 df["SEZ21_ID"] = normalize_code(df["SEZ21_ID"], width=12)
 
@@ -306,7 +295,7 @@ if show_only_valid:
     merged = merged[merged[value_col].notna()].copy()
 
 if merged.empty:
-    st.warning("Nessuna sezione valida disponibile per il comune selezionato.")
+    st.warning("Nessuna sezione valida disponibile.")
     st.stop()
 
 classifier = classify_values(merged[value_col], class_method, k=k_classes)
@@ -316,9 +305,8 @@ if classifier is None:
 
 merged = add_class_column(merged, value_col, classifier)
 
-n_classes = len(classifier.bins)
-colors = get_palette_colors(palette, n_classes)
-color_map = build_color_map(merged["_class_id"], colors)
+colors = get_palette_colors(palette, len(classifier.bins))
+color_map = {i: colors[i] for i in range(len(classifier.bins))}
 
 geojson = merge_properties_into_geojson(geojson, merged, join_key="SEZ21_ID")
 
@@ -328,21 +316,16 @@ tiles = {
     "CartoDB dark_matter": "CartoDB dark_matter",
 }
 
-center = compute_center_from_geojson(geojson)
+center = CENTERS.get(comune_code, [42.0, 13.0])
 
-m = folium.Map(
-    location=center,
-    zoom_start=12,
-    tiles=tiles[basemap],
-    control_scale=True
-)
+m = folium.Map(location=center, zoom_start=12, tiles=tiles[basemap], control_scale=True)
 
 tooltip_fields = [c for c in ["PRO_COM", "SEZ21", "SEZ21_ID", value_col] if c in merged.columns]
 popup_fields = [c for c in ["PRO_COM", "SEZ21", "SEZ21_ID", "P1", "P14", "P29", value_col] if c in merged.columns]
 
 folium.GeoJson(
     geojson,
-    name="Sections",
+    name="Sezioni",
     style_function=style_function_factory(color_map),
     tooltip=folium.GeoJsonTooltip(
         fields=tooltip_fields,
@@ -361,31 +344,26 @@ legend = bcm.StepColormap(
     index=[float(merged[value_col].min())] + [float(b) for b in classifier.bins],
     vmin=float(merged[value_col].min()),
     vmax=float(merged[value_col].max()),
-    caption=f"{theme} - {year}"
+    caption=f"{theme} - {anno}"
 )
 legend.add_to(m)
-
-folium.LayerControl().add_to(m)
 
 col1, col2 = st.columns([3, 1])
 
 with col1:
-    st.subheader(f"Map - {theme} {year}")
     st_folium(m, width=None, height=720)
 
 with col2:
-    st.subheader("Dataset")
-    st.write(f"**Municipality code:** {comune_code}")
+    st.write(f"**Comune:** {nome_comune}")
+    st.write(f"**Codice comune:** {comune_code}")
     st.write(f"**TopoJSON:** `{topo_path.name}`")
     st.write(f"**Excel:** `{excel_path.name}`")
-    st.write(f"**Available sheets:** {', '.join(sheets)}")
-
-    st.subheader("Summary")
-    st.write(f"**Displayed sections:** {len(merged)}")
-    st.write(f"**Minimum:** {merged[value_col].min():.2f}")
-    st.write(f"**Maximum:** {merged[value_col].max():.2f}")
-    st.write(f"**Mean:** {merged[value_col].mean():.2f}")
-    st.write(f"**Median:** {merged[value_col].median():.2f}")
+    st.write(f"**Fogli disponibili:** {', '.join(sheets)}")
+    st.write(f"**Sezioni visualizzate:** {len(merged)}")
+    st.write(f"**Minimo:** {merged[value_col].min():.2f}")
+    st.write(f"**Massimo:** {merged[value_col].max():.2f}")
+    st.write(f"**Media:** {merged[value_col].mean():.2f}")
+    st.write(f"**Mediana:** {merged[value_col].median():.2f}")
 
     cols_show = [c for c in ["PRO_COM", "SEZ21", "SEZ21_ID", "P1", "P14", "P29", value_col] if c in merged.columns]
     st.dataframe(
@@ -394,12 +372,10 @@ with col2:
         height=320
     )
 
-    csv = merged.drop(columns=[c for c in merged.columns if c.endswith("_class_id")], errors="ignore")
-    csv_bytes = csv.to_csv(index=False).encode("utf-8")
-
+    csv_bytes = merged.to_csv(index=False).encode("utf-8")
     st.download_button(
-        "Download CSV",
+        "Scarica CSV",
         data=csv_bytes,
-        file_name=f"{theme}_{year}_{comune_code}.csv",
+        file_name=f"{theme}_{anno}_{comune_code}.csv",
         mime="text/csv"
     )
