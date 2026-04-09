@@ -400,19 +400,19 @@ folium.TileLayer(
     max_zoom=tile_cfg.get("max_zoom", 19),
 ).add_to(m)
 
-<<<<<<< HEAD
+#<<<<<<< HEAD
 tooltip_candidates = ["PRO_COM", "SEZ21", "SEZ21_ID", "P1", "P14", "P29", value_col]
-=======
+#=======
 tooltip_candidates = ["PRO_COM", "SEZ21", "P1", "P14", "P29", value_col]
->>>>>>> origin/codex/fix-indexerror-in-app.py-jfi115
+#>>>>>>> origin/codex/fix-indexerror-in-app.py-jfi115
 tooltip_fields = [c for c in tooltip_candidates if c in merged.columns]
 tooltip_aliases = {
     "PRO_COM": "Codice comune:",
     "SEZ21": "Sezione:",
-<<<<<<< HEAD
+#<<<<<<< HEAD
     "SEZ21_ID": "ID sezione:",
-=======
->>>>>>> origin/codex/fix-indexerror-in-app.py-jfi115
+#=======
+#>>>>>>> origin/codex/fix-indexerror-in-app.py-jfi115
     "P1": "Popolazione totale:",
     "P14": "Pop < 5 anni:",
     "P29": "Pop > 74 anni:",
