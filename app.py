@@ -154,10 +154,18 @@ def get_palette_colors(name: str, n: int):
     return base[:n] if n <= len(base) else base + [base[-1]] * (n - len(base))
 
 
-def style_function_factory(color_map: dict):
+def style_function_factory(color_map: dict, class_lookup: dict, join_key: str = "SEZ21_ID"):
     def style_function(feature):
-        class_id = feature["properties"].get("_class_id")
-        fill = "#d3d3d3" if class_id is None else color_map.get(class_id, "#d3d3d3")
+        key = normalize_code(pd.Series([feature["properties"].get(join_key)]), width=12).iloc[0]
+        class_id = class_lookup.get(key)
+        if class_id is None:
+            return {
+                "fillColor": "#00000000",
+                "color": "#00000000",
+                "weight": 0,
+                "fillOpacity": 0,
+            }
+        fill = color_map.get(class_id, "#d3d3d3")
         return {
             "fillColor": fill,
             "color": "#444444",
@@ -168,17 +176,27 @@ def style_function_factory(color_map: dict):
 
 
 def merge_properties_into_topojson(topojson, object_name, merged_df, join_key="SEZ21_ID", only_matched=False):
+    normalized_keys = normalize_code(merged_df[join_key], width=None).dropna()
+    digit_key_lengths = [len(k) for k in normalized_keys if str(k).isdigit()]
+    key_width = max(digit_key_lengths) if digit_key_lengths else None
+
+    def normalize_join_key(value):
+        if pd.isna(value):
+            return None
+        key = normalize_code(pd.Series([value]), width=key_width).iloc[0]
+        return key if key else None
+
     lookup = {
-        str(row[join_key]): row.to_dict()
+        normalize_join_key(row[join_key]): row.to_dict()
         for _, row in merged_df.iterrows()
-        if pd.notna(row.get(join_key))
+        if normalize_join_key(row.get(join_key)) is not None
     }
 
     source_geometries = topojson["objects"][object_name].get("geometries", [])
     geometries = []
     for geom in source_geometries:
         props = geom.get("properties", {}).copy()
-        key = str(props.get(join_key))
+        key = normalize_join_key(props.get(join_key))
         if key in lookup:
             props.update(lookup[key])
             geom_out = geom.copy()
@@ -192,16 +210,24 @@ def merge_properties_into_topojson(topojson, object_name, merged_df, join_key="S
     topo_out = topojson.copy()
     topo_out["objects"] = topojson["objects"].copy()
     obj_out = topojson["objects"][object_name].copy()
-    obj_out["geometries"] = geometries
+    obj_out["geometries"] = geometries if geometries else source_geometries
     topo_out["objects"][object_name] = obj_out
 
     return topo_out
 
 
-CENTERS = {
-    "079023": [45.65, 13.77],
-    "070006": [41.56, 14.66],
-}
+def get_topojson_centroid(topojson: dict, object_name: str, fallback: list[float] | None = None) -> list[float]:
+    fallback = fallback or [42.0, 13.0]
+    try:
+        bounds = folium.TopoJson(topojson, object_path=f"objects.{object_name}").get_bounds()
+        if not bounds or len(bounds) != 2:
+            return fallback
+        (min_lat, min_lon), (max_lat, max_lon) = bounds
+        if min_lat == max_lat and min_lon == max_lon:
+            return fallback
+        return [(min_lat + max_lat) / 2, (min_lon + max_lon) / 2]
+    except Exception:
+        return fallback
 
 
 st.title("Mappa interattiva della temperatura superficiale estiva e UHI")
@@ -233,6 +259,9 @@ nome_to_code = {
     for _, row in comuni_disponibili.iterrows()
 }
 
+if "map_loaded" not in st.session_state:
+    st.session_state["map_loaded"] = False
+
 with st.sidebar.form("controls_form"):
     nome_comune = st.selectbox("Comune", list(nome_to_code.keys()))
     theme = st.selectbox("Indicatore", ["Temp_media", "UHI"])
@@ -247,12 +276,14 @@ with st.sidebar.form("controls_form"):
     )
     basemap = st.selectbox(
         "Mappa di base",
-        ["OpenStreetMap", "CartoDB positron", "CartoDB dark_matter"]
+        ["OpenStreetMap", "CartoDB positron", "CartoDB dark_matter", "Google Satellite"]
     )
-    show_only_valid = st.checkbox("Mostra solo sezioni con valori validi", value=True)
     load_map = st.form_submit_button("Carica mappa")
 
-if not load_map:
+if load_map:
+    st.session_state["map_loaded"] = True
+
+if not st.session_state["map_loaded"]:
     st.info("Seleziona un comune e clicca su 'Carica mappa'.")
     st.stop()
 
@@ -282,12 +313,12 @@ if not year_cols:
     st.error(f"Nessuna colonna trovata con prefisso {prefix}.")
     st.stop()
 
-anno = st.selectbox(
-    "Anno",
-    [c.replace(prefix, "") for c in year_cols],
-    index=len(year_cols) - 1
-)
+anno = st.slider("Anno", min_value=2019, max_value=2025, value=2025, step=1)
 value_col = f"{prefix}{anno}"
+if value_col not in df.columns:
+    anni_disponibili = sorted([int(c.replace(prefix, "")) for c in year_cols if c.replace(prefix, "").isdigit()])
+    st.warning(f"Anno {anno} non disponibile per {theme}. Anni disponibili: {', '.join(map(str, anni_disponibili))}.")
+    st.stop()
 
 props_df = topo_properties_to_dataframe(topojson, object_name)
 
@@ -307,16 +338,41 @@ if "PRO_COM" in props_df.columns:
 if "PRO_COM" in df.columns:
     df["PRO_COM"] = normalize_code(df["PRO_COM"], width=6)
 
-merged = props_df.merge(df, on="SEZ21_ID", how="left", suffixes=("", "_xls"))
+merged_all = props_df.merge(df, on="SEZ21_ID", how="left", suffixes=("", "_xls"))
 
-if show_only_valid:
-    merged = merged[merged[value_col].notna()].copy()
+topo_cache = st.session_state.setdefault("topo_enriched_cache", {})
+topo_cache_key = f"{comune_code}|{theme}"
+if topo_cache_key not in topo_cache:
+    topo_cache[topo_cache_key] = merge_properties_into_topojson(
+        topojson,
+        object_name,
+        merged_all,
+        join_key="SEZ21_ID",
+        only_matched=False
+    )
+topojson_enriched = topo_cache[topo_cache_key]
+
+show_only_valid = True
+merged = merged_all[merged_all[value_col].notna()].copy()
 
 if merged.empty:
     st.warning("Nessuna sezione valida disponibile.")
     st.stop()
 
-classifier = classify_values(merged[value_col], class_method, k=k_classes)
+year_cols_in_range = [
+    c for c in year_cols
+    if c.replace(prefix, "").isdigit() and 2019 <= int(c.replace(prefix, "")) <= 2025
+]
+global_values = merged_all[year_cols_in_range].stack().dropna()
+if global_values.empty:
+    st.warning("Impossibile calcolare la classificazione: non ci sono valori validi nel periodo 2019-2025.")
+    st.stop()
+
+classifier_cache = st.session_state.setdefault("classifier_cache", {})
+classifier_key = f"{comune_code}|{theme}|{class_method}|{k_classes}"
+if classifier_key not in classifier_cache:
+    classifier_cache[classifier_key] = classify_values(global_values, class_method, k=k_classes)
+classifier = classifier_cache[classifier_key]
 if classifier is None:
     st.warning("Impossibile classificare i valori.")
     st.stop()
@@ -325,44 +381,65 @@ merged = add_class_column(merged, value_col, classifier)
 
 colors = get_palette_colors(palette, len(classifier.bins))
 color_map = {i: colors[i] for i in range(len(classifier.bins))}
-
-topojson = merge_properties_into_topojson(
-    topojson,
-    object_name,
-    merged,
-    join_key="SEZ21_ID",
-    only_matched=show_only_valid
-)
-
-tiles = {
-    "OpenStreetMap": "OpenStreetMap",
-    "CartoDB positron": "CartoDB positron",
-    "CartoDB dark_matter": "CartoDB dark_matter",
+class_lookup = {
+    row["SEZ21_ID"]: row["_class_id"]
+    for _, row in merged[["SEZ21_ID", "_class_id"]].dropna(subset=["SEZ21_ID"]).iterrows()
 }
 
-center = CENTERS.get(comune_code, [42.0, 13.0])
+tile_configs = {
+    "OpenStreetMap": {"tiles": "OpenStreetMap", "attr": "OpenStreetMap"},
+    "CartoDB positron": {"tiles": "CartoDB positron", "attr": "CartoDB"},
+    "CartoDB dark_matter": {"tiles": "CartoDB dark_matter", "attr": "CartoDB"},
+    "Google Satellite": {
+        "tiles": "https://{s}.google.com/vt/lyrs=s&x={x}&y={y}&z={z}",
+        "attr": "Google",
+        "subdomains": ["mt0", "mt1", "mt2", "mt3"],
+        "max_zoom": 20,
+    },
+}
 
-m = folium.Map(location=center, zoom_start=12, tiles=tiles[basemap], control_scale=True)
+center = get_topojson_centroid(topojson, object_name, fallback=[42.0, 13.0])
 
-tooltip_fields = [c for c in ["PRO_COM", "SEZ21", "SEZ21_ID", value_col] if c in merged.columns]
+tile_cfg = tile_configs[basemap]
+m = folium.Map(location=center, zoom_start=12, tiles=None, control_scale=True)
+folium.TileLayer(
+    tiles=tile_cfg["tiles"],
+    attr=tile_cfg["attr"],
+    name=basemap,
+    overlay=False,
+    control=False,
+    subdomains=tile_cfg.get("subdomains", "abc"),
+    max_zoom=tile_cfg.get("max_zoom", 19),
+).add_to(m)
+
+tooltip_candidates = ["PRO_COM", "SEZ21", "P1", "P14", "P29", value_col]
+tooltip_fields = [c for c in tooltip_candidates if c in merged.columns]
+tooltip_aliases = {
+    "PRO_COM": "Codice comune:",
+    "SEZ21": "Sezione:",
+    "P1": "Popolazione totale:",
+    "P14": "Pop < 5 anni:",
+    "P29": "Pop > 74 anni:",
+    value_col: f"{theme} {anno}:",
+}
 
 folium.TopoJson(
-    topojson,
+    topojson_enriched,
     object_path=f"objects.{object_name}",
     name="Sezioni",
-    style_function=style_function_factory(color_map),
+    style_function=style_function_factory(color_map, class_lookup, join_key="SEZ21_ID"),
     tooltip=folium.GeoJsonTooltip(
         fields=tooltip_fields,
-        aliases=[f"{c}:" for c in tooltip_fields],
+        aliases=[tooltip_aliases.get(c, f"{c}:") for c in tooltip_fields],
         sticky=False
     )
 ).add_to(m)
 
 legend = bcm.StepColormap(
     colors=colors,
-    index=[float(merged[value_col].min())] + [float(b) for b in classifier.bins],
-    vmin=float(merged[value_col].min()),
-    vmax=float(merged[value_col].max()),
+    index=[float(global_values.min())] + [float(b) for b in classifier.bins],
+    vmin=float(global_values.min()),
+    vmax=float(global_values.max()),
     caption=f"{theme} - {anno}"
 )
 legend.add_to(m)
