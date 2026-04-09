@@ -340,7 +340,6 @@ if "PRO_COM" in df.columns:
 
 merged_all = props_df.merge(df, on="SEZ21_ID", how="left", suffixes=("", "_xls"))
 
-show_only_valid = True
 
 topo_cache = st.session_state.setdefault("topo_enriched_cache", {})
 topo_cache_key = f"{comune_code}|{theme}"
@@ -404,8 +403,15 @@ tile_configs = {
 
 center = get_topojson_centroid(topojson, object_name, fallback=[42.0, 13.0])
 
+map_view_cache = st.session_state.setdefault("map_view_cache", {})
+map_view_key = f"{comune_code}|{theme}"
+saved_view = map_view_cache.get(map_view_key, {})
+saved_center = saved_view.get("center", center)
+saved_zoom = saved_view.get("zoom", 12)
+
 tile_cfg = tile_configs[basemap]
-m = folium.Map(location=center, zoom_start=12, tiles=None, control_scale=True)
+m = folium.Map(location=saved_center, zoom_start=saved_zoom, tiles=None, control_scale=True)
+
 folium.TileLayer(
     tiles=tile_cfg["tiles"],
     attr=tile_cfg["attr"],
@@ -452,7 +458,18 @@ legend.add_to(m)
 col1, col2 = st.columns([3, 1])
 
 with col1:
-    st_folium(m, width=None, height=720)
+    map_state = st_folium(m, width=None, height=720)
+    if isinstance(map_state, dict):
+        zoom = map_state.get("zoom")
+        center_state = map_state.get("center")
+        if isinstance(center_state, dict):
+            lat = center_state.get("lat")
+            lng = center_state.get("lng")
+            if lat is not None and lng is not None:
+                map_view_cache[map_view_key] = {
+                    "center": [float(lat), float(lng)],
+                    "zoom": int(zoom) if zoom is not None else saved_zoom,
+                }
 
 with col2:
     st.write(f"**Comune:** {nome_comune}")
