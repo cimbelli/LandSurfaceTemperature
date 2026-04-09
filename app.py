@@ -243,6 +243,9 @@ nome_to_code = {
     for _, row in comuni_disponibili.iterrows()
 }
 
+if "map_loaded" not in st.session_state:
+    st.session_state["map_loaded"] = False
+
 with st.sidebar.form("controls_form"):
     nome_comune = st.selectbox("Comune", list(nome_to_code.keys()))
     theme = st.selectbox("Indicatore", ["Temp_media", "UHI"])
@@ -262,7 +265,10 @@ with st.sidebar.form("controls_form"):
     show_only_valid = st.checkbox("Mostra solo sezioni con valori validi", value=True)
     load_map = st.form_submit_button("Carica mappa")
 
-if not load_map:
+if load_map:
+    st.session_state["map_loaded"] = True
+
+if not st.session_state["map_loaded"]:
     st.info("Seleziona un comune e clicca su 'Carica mappa'.")
     st.stop()
 
