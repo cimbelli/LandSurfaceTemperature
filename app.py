@@ -268,7 +268,7 @@ with st.sidebar.form("controls_form"):
     )
     basemap = st.selectbox(
         "Mappa di base",
-        ["OpenStreetMap", "CartoDB positron", "CartoDB dark_matter"]
+        ["OpenStreetMap", "CartoDB positron", "CartoDB dark_matter", "Google Satellite"]
     )
     load_map = st.form_submit_button("Carica mappa")
 
@@ -330,16 +330,33 @@ if "PRO_COM" in props_df.columns:
 if "PRO_COM" in df.columns:
     df["PRO_COM"] = normalize_code(df["PRO_COM"], width=6)
 
-merged = props_df.merge(df, on="SEZ21_ID", how="left", suffixes=("", "_xls"))
+merged_all = props_df.merge(df, on="SEZ21_ID", how="left", suffixes=("", "_xls"))
 
 show_only_valid = True
+#<<<<<<< HEAD
 merged = merged[merged[value_col].notna()].copy()
+#=======
+merged = merged_all[merged_all[value_col].notna()].copy()
+#>>>>>>> origin/codex/fix-indexerror-in-app.py-jfi115
 
 if merged.empty:
     st.warning("Nessuna sezione valida disponibile.")
     st.stop()
 
-classifier = classify_values(merged[value_col], class_method, k=k_classes)
+year_cols_in_range = [
+    c for c in year_cols
+    if c.replace(prefix, "").isdigit() and 2019 <= int(c.replace(prefix, "")) <= 2025
+]
+global_values = merged_all[year_cols_in_range].stack().dropna()
+if global_values.empty:
+    st.warning("Impossibile calcolare la classificazione: non ci sono valori validi nel periodo 2019-2025.")
+    st.stop()
+
+classifier_cache = st.session_state.setdefault("classifier_cache", {})
+classifier_key = f"{comune_code}|{theme}|{class_method}|{k_classes}"
+if classifier_key not in classifier_cache:
+    classifier_cache[classifier_key] = classify_values(global_values, class_method, k=k_classes)
+classifier = classifier_cache[classifier_key]
 if classifier is None:
     st.warning("Impossibile classificare i valori.")
     st.stop()
@@ -357,22 +374,45 @@ topojson = merge_properties_into_topojson(
     only_matched=show_only_valid
 )
 
-tiles = {
-    "OpenStreetMap": "OpenStreetMap",
-    "CartoDB positron": "CartoDB positron",
-    "CartoDB dark_matter": "CartoDB dark_matter",
+tile_configs = {
+    "OpenStreetMap": {"tiles": "OpenStreetMap", "attr": "OpenStreetMap"},
+    "CartoDB positron": {"tiles": "CartoDB positron", "attr": "CartoDB"},
+    "CartoDB dark_matter": {"tiles": "CartoDB dark_matter", "attr": "CartoDB"},
+    "Google Satellite": {
+        "tiles": "https://{s}.google.com/vt/lyrs=s&x={x}&y={y}&z={z}",
+        "attr": "Google",
+        "subdomains": ["mt0", "mt1", "mt2", "mt3"],
+        "max_zoom": 20,
+    },
 }
 
 center = get_topojson_centroid(topojson, object_name, fallback=[42.0, 13.0])
 
-m = folium.Map(location=center, zoom_start=12, tiles=tiles[basemap], control_scale=True)
+tile_cfg = tile_configs[basemap]
+m = folium.Map(location=center, zoom_start=12, tiles=None, control_scale=True)
+folium.TileLayer(
+    tiles=tile_cfg["tiles"],
+    attr=tile_cfg["attr"],
+    name=basemap,
+    overlay=False,
+    control=False,
+    subdomains=tile_cfg.get("subdomains", "abc"),
+    max_zoom=tile_cfg.get("max_zoom", 19),
+).add_to(m)
 
+<<<<<<< HEAD
 tooltip_candidates = ["PRO_COM", "SEZ21", "SEZ21_ID", "P1", "P14", "P29", value_col]
+=======
+tooltip_candidates = ["PRO_COM", "SEZ21", "P1", "P14", "P29", value_col]
+>>>>>>> origin/codex/fix-indexerror-in-app.py-jfi115
 tooltip_fields = [c for c in tooltip_candidates if c in merged.columns]
 tooltip_aliases = {
     "PRO_COM": "Codice comune:",
     "SEZ21": "Sezione:",
+<<<<<<< HEAD
     "SEZ21_ID": "ID sezione:",
+=======
+>>>>>>> origin/codex/fix-indexerror-in-app.py-jfi115
     "P1": "Popolazione totale:",
     "P14": "Pop < 5 anni:",
     "P29": "Pop > 74 anni:",
@@ -393,9 +433,9 @@ folium.TopoJson(
 
 legend = bcm.StepColormap(
     colors=colors,
-    index=[float(merged[value_col].min())] + [float(b) for b in classifier.bins],
-    vmin=float(merged[value_col].min()),
-    vmax=float(merged[value_col].max()),
+    index=[float(global_values.min())] + [float(b) for b in classifier.bins],
+    vmin=float(global_values.min()),
+    vmax=float(global_values.max()),
     caption=f"{theme} - {anno}"
 )
 legend.add_to(m)
