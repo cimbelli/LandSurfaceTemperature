@@ -230,7 +230,7 @@ def get_topojson_centroid(topojson: dict, object_name: str, fallback: list[float
         return fallback
 
 
-st.title("Mappa interattiva della temperatura superficiale estiva e UHI")
+st.title("Mappa interattiva della temperatura superficiale estiva e UHI (Urban Heat Island")
 
 comuni_codes, topo_map, excel_map = index_datasets()
 comuni_dict = load_comuni_dict()
