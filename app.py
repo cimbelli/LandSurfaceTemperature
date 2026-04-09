@@ -154,10 +154,18 @@ def get_palette_colors(name: str, n: int):
     return base[:n] if n <= len(base) else base + [base[-1]] * (n - len(base))
 
 
-def style_function_factory(color_map: dict):
+def style_function_factory(color_map: dict, class_lookup: dict, join_key: str = "SEZ21_ID"):
     def style_function(feature):
-        class_id = feature["properties"].get("_class_id")
-        fill = "#d3d3d3" if class_id is None else color_map.get(class_id, "#d3d3d3")
+        key = normalize_code(pd.Series([feature["properties"].get(join_key)]), width=12).iloc[0]
+        class_id = class_lookup.get(key)
+        if class_id is None:
+            return {
+                "fillColor": "#00000000",
+                "color": "#00000000",
+                "weight": 0,
+                "fillOpacity": 0,
+            }
+        fill = color_map.get(class_id, "#d3d3d3")
         return {
             "fillColor": fill,
             "color": "#444444",
@@ -333,11 +341,22 @@ if "PRO_COM" in df.columns:
 merged_all = props_df.merge(df, on="SEZ21_ID", how="left", suffixes=("", "_xls"))
 
 show_only_valid = True
-#<<<<<<< HEAD
-#merged = merged[merged[value_col].notna()].copy()
-#=======
+
+topo_cache = st.session_state.setdefault("topo_enriched_cache", {})
+topo_cache_key = f"{comune_code}|{theme}"
+if topo_cache_key not in topo_cache:
+    topo_cache[topo_cache_key] = merge_properties_into_topojson(
+        topojson,
+        object_name,
+        merged_all,
+        join_key="SEZ21_ID",
+        only_matched=False
+    )
+topojson_enriched = topo_cache[topo_cache_key]
+
+show_only_valid = True
 merged = merged_all[merged_all[value_col].notna()].copy()
-#>>>>>>> origin/codex/fix-indexerror-in-app.py-jfi115
+
 
 if merged.empty:
     st.warning("Nessuna sezione valida disponibile.")
@@ -366,13 +385,10 @@ merged = add_class_column(merged, value_col, classifier)
 colors = get_palette_colors(palette, len(classifier.bins))
 color_map = {i: colors[i] for i in range(len(classifier.bins))}
 
-topojson = merge_properties_into_topojson(
-    topojson,
-    object_name,
-    merged,
-    join_key="SEZ21_ID",
-    only_matched=show_only_valid
-)
+class_lookup = {
+    row["SEZ21_ID"]: row["_class_id"]
+    for _, row in merged[["SEZ21_ID", "_class_id"]].dropna(subset=["SEZ21_ID"]).iterrows()
+}
 
 tile_configs = {
     "OpenStreetMap": {"tiles": "OpenStreetMap", "attr": "OpenStreetMap"},
@@ -400,19 +416,12 @@ folium.TileLayer(
     max_zoom=tile_cfg.get("max_zoom", 19),
 ).add_to(m)
 
-#<<<<<<< HEAD
-#tooltip_candidates = ["PRO_COM", "SEZ21", "SEZ21_ID", "P1", "P14", "P29", value_col]
-#=======
 tooltip_candidates = ["PRO_COM", "SEZ21", "P1", "P14", "P29", value_col]
-#>>>>>>> origin/codex/fix-indexerror-in-app.py-jfi115
+
 tooltip_fields = [c for c in tooltip_candidates if c in merged.columns]
 tooltip_aliases = {
     "PRO_COM": "Codice comune:",
     "SEZ21": "Sezione:",
-#<<<<<<< HEAD
-#    "SEZ21_ID": "ID sezione:",
-#=======
-#>>>>>>> origin/codex/fix-indexerror-in-app.py-jfi115
     "P1": "Popolazione totale:",
     "P14": "Pop < 5 anni:",
     "P29": "Pop > 74 anni:",
@@ -420,10 +429,10 @@ tooltip_aliases = {
 }
 
 folium.TopoJson(
-    topojson,
+    topojson_enriched,
     object_path=f"objects.{object_name}",
     name="Sezioni",
-    style_function=style_function_factory(color_map),
+    style_function=style_function_factory(color_map, class_lookup, join_key="SEZ21_ID"),
     tooltip=folium.GeoJsonTooltip(
         fields=tooltip_fields,
         aliases=[tooltip_aliases.get(c, f"{c}:") for c in tooltip_fields],
