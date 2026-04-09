@@ -334,7 +334,7 @@ merged_all = props_df.merge(df, on="SEZ21_ID", how="left", suffixes=("", "_xls")
 
 show_only_valid = True
 #<<<<<<< HEAD
-merged = merged[merged[value_col].notna()].copy()
+#merged = merged[merged[value_col].notna()].copy()
 #=======
 merged = merged_all[merged_all[value_col].notna()].copy()
 #>>>>>>> origin/codex/fix-indexerror-in-app.py-jfi115
@@ -401,7 +401,7 @@ folium.TileLayer(
 ).add_to(m)
 
 #<<<<<<< HEAD
-tooltip_candidates = ["PRO_COM", "SEZ21", "SEZ21_ID", "P1", "P14", "P29", value_col]
+#tooltip_candidates = ["PRO_COM", "SEZ21", "SEZ21_ID", "P1", "P14", "P29", value_col]
 #=======
 tooltip_candidates = ["PRO_COM", "SEZ21", "P1", "P14", "P29", value_col]
 #>>>>>>> origin/codex/fix-indexerror-in-app.py-jfi115
@@ -410,7 +410,7 @@ tooltip_aliases = {
     "PRO_COM": "Codice comune:",
     "SEZ21": "Sezione:",
 #<<<<<<< HEAD
-    "SEZ21_ID": "ID sezione:",
+#    "SEZ21_ID": "ID sezione:",
 #=======
 #>>>>>>> origin/codex/fix-indexerror-in-app.py-jfi115
     "P1": "Popolazione totale:",
