@@ -259,10 +259,8 @@ nome_to_code = {
     for _, row in comuni_disponibili.iterrows()
 }
 
-if "map_loaded" not in st.session_state:
-    st.session_state["map_loaded"] = False
 
-with st.sidebar.form("controls_form"):
+with st.sidebar:
     nome_comune = st.selectbox("Comune", list(nome_to_code.keys()))
     theme = st.selectbox("Indicatore", ["Temp_media", "UHI"])
     class_method = st.selectbox(
@@ -278,14 +276,6 @@ with st.sidebar.form("controls_form"):
         "Mappa di base",
         ["OpenStreetMap", "CartoDB positron", "CartoDB dark_matter", "Google Satellite"]
     )
-    load_map = st.form_submit_button("Carica mappa")
-
-if load_map:
-    st.session_state["map_loaded"] = True
-
-if not st.session_state["map_loaded"]:
-    st.info("Seleziona un comune e clicca su 'Carica mappa'.")
-    st.stop()
 
 comune_code = nome_to_code[nome_comune]
 topo_path = topo_map[comune_code]
