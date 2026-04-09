@@ -85,22 +85,24 @@ def load_excel_tables(path_str: str):
 
 
 @st.cache_data
-def load_topojson_as_geojson(path_str: str):
+def load_topojson(path_str: str):
     path = Path(path_str)
     with open(path, "r", encoding="utf-8") as f:
-        topo = json.load(f)
-
-    from topojson import Topology
-    geo = Topology(topo).to_geojson()
-    geojson = json.loads(geo)
-
-    return geojson
+        return json.load(f)
 
 
-def topo_properties_to_dataframe(geojson: dict) -> pd.DataFrame:
+def get_topology_object_name(topojson: dict) -> str:
+    objects = topojson.get("objects", {})
+    if not objects:
+        raise ValueError("Nel TopoJSON manca il nodo 'objects'.")
+    return next(iter(objects))
+
+
+def topo_properties_to_dataframe(topojson: dict, object_name: str) -> pd.DataFrame:
     rows = []
-    for feat in geojson["features"]:
-        rows.append(feat.get("properties", {}).copy())
+    geometries = topojson["objects"][object_name].get("geometries", [])
+    for geom in geometries:
+        rows.append(geom.get("properties", {}).copy())
     return pd.DataFrame(rows)
 
 
@@ -165,21 +167,35 @@ def style_function_factory(color_map: dict):
     return style_function
 
 
-def merge_properties_into_geojson(geojson, merged_df, join_key="SEZ21_ID"):
+def merge_properties_into_topojson(topojson, object_name, merged_df, join_key="SEZ21_ID", only_matched=False):
     lookup = {
         str(row[join_key]): row.to_dict()
         for _, row in merged_df.iterrows()
         if pd.notna(row.get(join_key))
     }
 
-    for feat in geojson["features"]:
-        props = feat.get("properties", {})
+    source_geometries = topojson["objects"][object_name].get("geometries", [])
+    geometries = []
+    for geom in source_geometries:
+        props = geom.get("properties", {}).copy()
         key = str(props.get(join_key))
         if key in lookup:
             props.update(lookup[key])
-        feat["properties"] = props
+            geom_out = geom.copy()
+            geom_out["properties"] = props
+            geometries.append(geom_out)
+        elif not only_matched:
+            geom_out = geom.copy()
+            geom_out["properties"] = props
+            geometries.append(geom_out)
 
-    return geojson
+    topo_out = topojson.copy()
+    topo_out["objects"] = topojson["objects"].copy()
+    obj_out = topojson["objects"][object_name].copy()
+    obj_out["geometries"] = geometries
+    topo_out["objects"][object_name] = obj_out
+
+    return topo_out
 
 
 CENTERS = {
@@ -244,17 +260,19 @@ comune_code = nome_to_code[nome_comune]
 topo_path = topo_map[comune_code]
 excel_path = excel_map[comune_code]
 
-try:
-    geojson = load_topojson_as_geojson(str(topo_path))
-except Exception as e:
-    st.error(f"Errore nella lettura del TopoJSON: {e}")
-    st.stop()
+with st.spinner("Caricamento dati geografici e tabellari in corso..."):
+    try:
+        topojson = load_topojson(str(topo_path))
+        object_name = get_topology_object_name(topojson)
+    except Exception as e:
+        st.error(f"Errore nella lettura del TopoJSON: {e}")
+        st.stop()
 
-try:
-    temp_df, uhi_df, sheets = load_excel_tables(str(excel_path))
-except Exception as e:
-    st.error(f"Errore nella lettura dell'Excel: {e}")
-    st.stop()
+    try:
+        temp_df, uhi_df, sheets = load_excel_tables(str(excel_path))
+    except Exception as e:
+        st.error(f"Errore nella lettura dell'Excel: {e}")
+        st.stop()
 
 df = temp_df.copy() if theme == "Temp_media" else uhi_df.copy()
 prefix = "Media_" if theme == "Temp_media" else "UHI_"
@@ -271,7 +289,7 @@ anno = st.selectbox(
 )
 value_col = f"{prefix}{anno}"
 
-props_df = topo_properties_to_dataframe(geojson)
+props_df = topo_properties_to_dataframe(topojson, object_name)
 
 if "SEZ21_ID" not in props_df.columns:
     st.error("Nel TopoJSON manca la colonna SEZ21_ID.")
@@ -308,7 +326,13 @@ merged = add_class_column(merged, value_col, classifier)
 colors = get_palette_colors(palette, len(classifier.bins))
 color_map = {i: colors[i] for i in range(len(classifier.bins))}
 
-geojson = merge_properties_into_geojson(geojson, merged, join_key="SEZ21_ID")
+topojson = merge_properties_into_topojson(
+    topojson,
+    object_name,
+    merged,
+    join_key="SEZ21_ID",
+    only_matched=show_only_valid
+)
 
 tiles = {
     "OpenStreetMap": "OpenStreetMap",
@@ -321,21 +345,16 @@ center = CENTERS.get(comune_code, [42.0, 13.0])
 m = folium.Map(location=center, zoom_start=12, tiles=tiles[basemap], control_scale=True)
 
 tooltip_fields = [c for c in ["PRO_COM", "SEZ21", "SEZ21_ID", value_col] if c in merged.columns]
-popup_fields = [c for c in ["PRO_COM", "SEZ21", "SEZ21_ID", "P1", "P14", "P29", value_col] if c in merged.columns]
 
-folium.GeoJson(
-    geojson,
+folium.TopoJson(
+    topojson,
+    object_path=f"objects.{object_name}",
     name="Sezioni",
     style_function=style_function_factory(color_map),
     tooltip=folium.GeoJsonTooltip(
         fields=tooltip_fields,
         aliases=[f"{c}:" for c in tooltip_fields],
         sticky=False
-    ),
-    popup=folium.GeoJsonPopup(
-        fields=popup_fields,
-        aliases=[f"{c}:" for c in popup_fields],
-        labels=True
     )
 ).add_to(m)
 
