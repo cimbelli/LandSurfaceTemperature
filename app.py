@@ -168,17 +168,27 @@ def style_function_factory(color_map: dict):
 
 
 def merge_properties_into_topojson(topojson, object_name, merged_df, join_key="SEZ21_ID", only_matched=False):
+    normalized_keys = normalize_code(merged_df[join_key], width=None).dropna()
+    digit_key_lengths = [len(k) for k in normalized_keys if str(k).isdigit()]
+    key_width = max(digit_key_lengths) if digit_key_lengths else None
+
+    def normalize_join_key(value):
+        if pd.isna(value):
+            return None
+        key = normalize_code(pd.Series([value]), width=key_width).iloc[0]
+        return key if key else None
+
     lookup = {
-        str(row[join_key]): row.to_dict()
+        normalize_join_key(row[join_key]): row.to_dict()
         for _, row in merged_df.iterrows()
-        if pd.notna(row.get(join_key))
+        if normalize_join_key(row.get(join_key)) is not None
     }
 
     source_geometries = topojson["objects"][object_name].get("geometries", [])
     geometries = []
     for geom in source_geometries:
         props = geom.get("properties", {}).copy()
-        key = str(props.get(join_key))
+        key = normalize_join_key(props.get(join_key))
         if key in lookup:
             props.update(lookup[key])
             geom_out = geom.copy()
@@ -192,7 +202,7 @@ def merge_properties_into_topojson(topojson, object_name, merged_df, join_key="S
     topo_out = topojson.copy()
     topo_out["objects"] = topojson["objects"].copy()
     obj_out = topojson["objects"][object_name].copy()
-    obj_out["geometries"] = geometries
+    obj_out["geometries"] = geometries if geometries else source_geometries
     topo_out["objects"][object_name] = obj_out
 
     return topo_out
@@ -233,6 +243,9 @@ nome_to_code = {
     for _, row in comuni_disponibili.iterrows()
 }
 
+if "map_loaded" not in st.session_state:
+    st.session_state["map_loaded"] = False
+
 with st.sidebar.form("controls_form"):
     nome_comune = st.selectbox("Comune", list(nome_to_code.keys()))
     theme = st.selectbox("Indicatore", ["Temp_media", "UHI"])
@@ -252,7 +265,10 @@ with st.sidebar.form("controls_form"):
     show_only_valid = st.checkbox("Mostra solo sezioni con valori validi", value=True)
     load_map = st.form_submit_button("Carica mappa")
 
-if not load_map:
+if load_map:
+    st.session_state["map_loaded"] = True
+
+if not st.session_state["map_loaded"]:
     st.info("Seleziona un comune e clicca su 'Carica mappa'.")
     st.stop()
 
